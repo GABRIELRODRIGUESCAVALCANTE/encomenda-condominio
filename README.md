@@ -9,9 +9,11 @@ Na retirada, o porteiro confere um código de 4 dígitos enviado ao morador.
 1. Porteiro toca em **Ler QR code** (câmera do celular/tablet).
 2. Se o morador **pré-cadastrou o rastreio**, o sistema já sabe de quem é.
    Senão, o porteiro digita o apto (ex.: `302`, `A302`) ou o nome e escolhe.
-3. **Registrar e avisar** → salva a encomenda e manda a mensagem:
+3. (Opcional) **📸 Tirar foto** da encomenda — no celular abre a câmera direto.
+   A foto é reduzida no próprio aparelho (~200 KB) antes de enviar.
+4. **Registrar e avisar** → salva a encomenda e manda a mensagem:
    > Olá João! Chegou uma encomenda para Bloco A - Apto 302 na portaria do Residencial Exemplo. Código de retirada: 2614
-4. Na retirada: **Entregar** → digita o código informado pelo morador.
+5. Na retirada: **Entregar** → a foto aparece para conferir o pacote → digita o código informado pelo morador.
    (Se o morador perdeu o código, marca a opção e registra quem retirou.)
 
 Se o envio falhar, a encomenda **fica registrada** e aparece com ⚠ e um botão 🔁 para reenviar.
@@ -43,7 +45,8 @@ O navegador só libera a câmera em **HTTPS**. Opções:
 - **Teste rápido:** com o servidor rodando, `cloudflared tunnel --url http://localhost:8000`
   gera um endereço `https://...trycloudflare.com` para abrir no celular.
 - **Definitivo:** hospedar em Railway, Render, Fly.io ou uma VPS com domínio + HTTPS.
-  Guarde o arquivo `encomendas.db` em disco persistente (é o banco de dados).
+  Guarde o arquivo `encomendas.db` (banco de dados) e a pasta `fotos/` em disco
+  persistente e inclua os dois no backup. Dá para mudar os locais com `DATABASE_PATH` e `FOTOS_DIR`.
 
 Dica: no celular, use “Adicionar à tela inicial” para abrir como um app.
 
@@ -86,12 +89,12 @@ app/
   notificador.py   envio do aviso (console / WhatsApp)
   config.py        configurações (.env)
   static/          telas da portaria e de moradores
+fotos/             fotos das encomendas (criada automaticamente, fora do git)
 tests/             testes automatizados
 ```
 
 ## Próximos passos sugeridos
 
-- Foto da encomenda no registro
 - Lembrete automático para encomendas paradas há X dias
 - Portal do morador para pré-cadastrar rastreios sozinho
 - Leitura (OCR) do nome/apto impresso na etiqueta

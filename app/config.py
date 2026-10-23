@@ -19,6 +19,9 @@ def _carregar_env(caminho: Path) -> None:
 _carregar_env(BASE_DIR / ".env")
 
 DATABASE_PATH = os.environ.get("DATABASE_PATH", str(BASE_DIR / "encomendas.db"))
+# Pasta onde ficam as fotos das encomendas (faça backup junto com o banco).
+FOTOS_DIR = os.environ.get("FOTOS_DIR", str(BASE_DIR / "fotos"))
+FOTO_MAX_BYTES = int(float(os.environ.get("FOTO_MAX_MB", "5")) * 1024 * 1024)
 NOME_CONDOMINIO = os.environ.get("NOME_CONDOMINIO", "Condomínio")
 
 # Login da portaria (HTTP Basic). Troque em produção!

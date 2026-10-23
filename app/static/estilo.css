@@ -86,3 +86,12 @@ dialog {
 }
 dialog::backdrop { background: rgba(0, 0, 0, .5); }
 .codigo-grande { font-size: 2rem; letter-spacing: .3rem; text-align: center; }
+.foto-previa { margin-top: 8px; display: flex; gap: 8px; align-items: center; }
+.foto-previa img { width: 96px; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--borda); }
+.lista li .info { flex: 1; min-width: 0; }
+.miniatura {
+  width: 56px; height: 56px; object-fit: cover; border-radius: 6px;
+  border: 1px solid var(--borda); cursor: zoom-in; flex-shrink: 0;
+}
+.foto-dialogo { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; background: var(--fundo); }
+.foto-grande { width: 100%; max-height: 75vh; object-fit: contain; border-radius: 8px; }

@@ -34,6 +34,14 @@
     <label for="observacao">Observação (opcional)</label>
     <input id="observacao" placeholder="Ex.: caixa grande, Mercado Livre">
 
+    <label>Foto da encomenda (opcional)</label>
+    <input type="file" id="foto-arquivo" accept="image/*" capture="environment" class="oculto">
+    <button id="btn-foto" type="button" class="grande">📸 Tirar foto</button>
+    <div id="foto-previa" class="foto-previa oculto">
+      <img id="foto-img" alt="Prévia da foto da encomenda">
+      <button id="btn-remover-foto" type="button">Remover foto</button>
+    </div>
+
     <button id="btn-registrar" class="primario grande" style="margin-top:16px" disabled>
       Registrar e avisar morador
     </button>
@@ -51,6 +59,7 @@
   <form method="dialog" id="form-retirada">
     <h2>Entregar encomenda</h2>
     <p id="dlg-descricao" class="detalhe"></p>
+    <img id="dlg-foto" class="foto-dialogo oculto" alt="Foto da encomenda">
     <label for="cod-retirada">Código de retirada informado pelo morador</label>
     <input id="cod-retirada" class="codigo-grande" inputmode="numeric" maxlength="4" autocomplete="off">
     <label for="retirada-por">Quem retirou (opcional)</label>
@@ -66,11 +75,19 @@
   </form>
 </dialog>
 
+<dialog id="dlg-foto-grande">
+  <form method="dialog">
+    <img id="foto-grande" class="foto-grande" alt="Foto da encomenda">
+    <div class="linha" style="margin-top:12px;justify-content:flex-end"><button>Fechar</button></div>
+  </form>
+</dialog>
+
 <script>
 const $ = (id) => document.getElementById(id);
 let moradorSelecionado = null;
 let leitor = null;
 let encomendaRetirada = null;
+let fotoBlob = null;
 
 async function api(caminho, opcoes = {}) {
   const resp = await fetch(caminho, {
@@ -200,6 +217,66 @@ function selecionarMorador(m) {
   $("btn-registrar").textContent = `Registrar e avisar ${m.nome.split(" ")[0]} (${m.unidade})`;
 }
 
+// ---------- Foto ----------
+
+$("btn-foto").onclick = () => $("foto-arquivo").click();
+
+$("foto-arquivo").onchange = async () => {
+  const arquivo = $("foto-arquivo").files[0];
+  $("foto-arquivo").value = "";
+  if (!arquivo) return;
+  try {
+    fotoBlob = await comprimirFoto(arquivo);
+  } catch (e) {
+    fotoBlob = arquivo; // navegador antigo: envia a original
+  }
+  $("foto-img").src = URL.createObjectURL(fotoBlob);
+  $("foto-previa").classList.remove("oculto");
+  $("btn-foto").textContent = "📸 Tirar outra foto";
+};
+
+$("btn-remover-foto").onclick = limparFoto;
+
+function limparFoto() {
+  if ($("foto-img").src) URL.revokeObjectURL($("foto-img").src);
+  fotoBlob = null;
+  $("foto-img").removeAttribute("src");
+  $("foto-previa").classList.add("oculto");
+  $("btn-foto").textContent = "📸 Tirar foto";
+}
+
+// Reduz a foto do celular (5–10 MB) para ~200 KB antes de enviar.
+async function comprimirFoto(arquivo, ladoMax = 1280, qualidade = 0.75) {
+  const img = await createImageBitmap(arquivo, { imageOrientation: "from-image" });
+  const escala = Math.min(1, ladoMax / Math.max(img.width, img.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(img.width * escala);
+  canvas.height = Math.round(img.height * escala);
+  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+  img.close();
+  return new Promise((ok, falha) =>
+    canvas.toBlob((b) => (b ? ok(b) : falha(new Error("Falha ao comprimir"))), "image/jpeg", qualidade));
+}
+
+async function enviarFoto(encomendaId, blob) {
+  const form = new FormData();
+  form.append("foto", blob, "foto.jpg");
+  const resp = await fetch(`/api/encomendas/${encomendaId}/foto`, { method: "PUT", body: form });
+  if (!resp.ok) {
+    const dados = await resp.json().catch(() => ({}));
+    throw new Error(dados.detail || `Erro ${resp.status}`);
+  }
+}
+
+function urlFoto(e) {
+  return `/api/encomendas/${e.id}/foto?v=${encodeURIComponent(e.foto)}`;
+}
+
+function verFotoGrande(e) {
+  $("foto-grande").src = urlFoto(e);
+  $("dlg-foto-grande").showModal();
+}
+
 // ---------- Registro ----------
 
 $("btn-registrar").onclick = async () => {
@@ -214,10 +291,15 @@ $("btn-registrar").onclick = async () => {
         observacao: $("observacao").value.trim(),
       }),
     });
+    let erroFoto = "";
+    if (fotoBlob) {
+      try { await enviarFoto(r.id, fotoBlob); }
+      catch (e) { erroFoto = ` A foto não foi salva (${e.message}).`; }
+    }
     if (r.notificado) {
-      aviso($("aviso-registro"), `✅ Registrada! ${moradorSelecionado.nome} foi avisado(a). Código de retirada: ${r.codigo_retirada}`);
+      aviso($("aviso-registro"), `✅ Registrada! ${moradorSelecionado.nome} foi avisado(a). Código de retirada: ${r.codigo_retirada}.${erroFoto}`, erroFoto ? "alerta" : "ok");
     } else {
-      aviso($("aviso-registro"), `Encomenda registrada, mas o aviso falhou: ${r.erro_notificacao}`, "alerta");
+      aviso($("aviso-registro"), `Encomenda registrada, mas o aviso falhou: ${r.erro_notificacao}.${erroFoto}`, "alerta");
     }
     limparFormulario();
     carregarPendentes();
@@ -232,6 +314,7 @@ function limparFormulario() {
   for (const id of ["codigo", "busca-morador", "observacao"]) $(id).value = "";
   $("resultado-moradores").innerHTML = "";
   aviso($("aviso-codigo"), "");
+  limparFoto();
   $("btn-registrar").disabled = true;
   $("btn-registrar").textContent = "Registrar e avisar morador";
 }
@@ -250,7 +333,8 @@ async function carregarPendentes() {
       ? `<span class="etiqueta ok">✓ avisado</span>`
       : `<span class="etiqueta erro" title="${escapar(e.erro_notificacao)}">⚠ aviso não enviado</span>`;
     li.innerHTML = `
-      <div>
+      ${e.tem_foto ? `<img class="miniatura" src="${urlFoto(e)}" alt="Foto" loading="lazy">` : ""}
+      <div class="info">
         <strong>${escapar(e.unidade)}</strong> · ${escapar(e.nome)}<br>
         <span class="detalhe">${escapar(e.recebida_em)}${e.codigo ? " · " + escapar(e.codigo) : ""}${e.observacao ? " · " + escapar(e.observacao) : ""}</span><br>
         ${status}
@@ -261,6 +345,7 @@ async function carregarPendentes() {
       </div>`;
     li.querySelector('[data-acao="reenviar"]').onclick = () => reenviar(e);
     li.querySelector('[data-acao="entregar"]').onclick = () => abrirRetirada(e);
+    if (e.tem_foto) li.querySelector(".miniatura").onclick = () => verFotoGrande(e);
     ul.appendChild(li);
   }
 }
@@ -282,6 +367,8 @@ async function reenviar(e) {
 function abrirRetirada(e) {
   encomendaRetirada = e;
   $("dlg-descricao").textContent = `${e.unidade} · ${e.nome}`;
+  $("dlg-foto").classList.toggle("oculto", !e.tem_foto);
+  if (e.tem_foto) $("dlg-foto").src = urlFoto(e); else $("dlg-foto").removeAttribute("src");
   $("cod-retirada").value = "";
   $("retirada-por").value = "";
   $("sem-codigo").checked = false;

@@ -4,6 +4,7 @@ import io
 import logging
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -100,6 +101,17 @@ def notificar(conn, encomenda_id: int) -> dict:
         logging.error("Falha ao notificar encomenda %s: %s", encomenda_id, erro)
         conn.execute("UPDATE encomendas SET notificado = 0, erro_notificacao = ? WHERE id = ?", (str(erro), encomenda_id))
         return {"notificado": False, "erro_notificacao": str(erro)}
+
+
+def tipo_imagem(cabecalho: bytes) -> str | None:
+    """Extensão pela assinatura do arquivo (não confia no nome nem no content-type)."""
+    if cabecalho.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if cabecalho.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if cabecalho[:4] == b"RIFF" and cabecalho[8:12] == b"WEBP":
+        return ".webp"
+    return None
 
 
 # ---------- Telas ----------
@@ -248,7 +260,7 @@ def listar_encomendas(status: str = "pendentes", q: str = ""):
                 WHERE {filtro} ORDER BY e.recebida_em DESC LIMIT 200""",
             params,
         ).fetchall()
-    return [{**dict(e), "unidade": unidade(e)} for e in linhas]
+    return [{**dict(e), "unidade": unidade(e), "tem_foto": bool(e["foto"])} for e in linhas]
 
 
 @app.post("/api/encomendas", status_code=201)
@@ -277,6 +289,42 @@ def reenviar_aviso(encomenda_id: int):
         if e["retirada_em"]:
             raise HTTPException(400, "Encomenda já foi retirada")
         return notificar(conn, encomenda_id)
+
+
+@app.put("/api/encomendas/{encomenda_id}/foto")
+async def salvar_foto(encomenda_id: int, foto: UploadFile = File(...)):
+    conteudo = await foto.read(config.FOTO_MAX_BYTES + 1)
+    if len(conteudo) > config.FOTO_MAX_BYTES:
+        raise HTTPException(413, f"Foto maior que {config.FOTO_MAX_BYTES // (1024 * 1024)} MB")
+    extensao = tipo_imagem(conteudo[:16])
+    if not extensao:
+        raise HTTPException(400, "Envie uma imagem JPG, PNG ou WEBP")
+
+    with db.transacao() as conn:
+        e = conn.execute("SELECT foto FROM encomendas WHERE id = ?", (encomenda_id,)).fetchone()
+        if not e:
+            raise HTTPException(404, "Encomenda não encontrada")
+        pasta = Path(config.FOTOS_DIR)
+        pasta.mkdir(parents=True, exist_ok=True)
+        # Nome novo a cada envio: troca a URL e o navegador não mostra a foto antiga do cache.
+        nome = f"{encomenda_id}-{secrets.token_hex(4)}{extensao}"
+        (pasta / nome).write_bytes(conteudo)
+        conn.execute("UPDATE encomendas SET foto = ? WHERE id = ?", (nome, encomenda_id))
+    if e["foto"]:
+        (pasta / e["foto"]).unlink(missing_ok=True)
+    return {"foto": nome}
+
+
+@app.get("/api/encomendas/{encomenda_id}/foto")
+def ver_foto(encomenda_id: int):
+    with db.transacao() as conn:
+        e = conn.execute("SELECT foto FROM encomendas WHERE id = ?", (encomenda_id,)).fetchone()
+    if not e or not e["foto"]:
+        raise HTTPException(404, "Encomenda sem foto")
+    caminho = Path(config.FOTOS_DIR) / e["foto"]
+    if not caminho.is_file():
+        raise HTTPException(404, "Arquivo da foto não encontrado")
+    return FileResponse(caminho, headers={"Cache-Control": "private, max-age=31536000"})
 
 
 @app.post("/api/encomendas/{encomenda_id}/retirar")

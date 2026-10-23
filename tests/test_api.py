@@ -9,6 +9,7 @@ from app import config, notificador
 @pytest.fixture
 def cliente(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DATABASE_PATH", str(tmp_path / "teste.db"))
+    monkeypatch.setattr(config, "FOTOS_DIR", str(tmp_path / "fotos"))
     monkeypatch.setattr(config, "NOTIFICADOR", "console")
     from app.main import app
 
@@ -131,3 +132,69 @@ def test_whatsapp_monta_requisicao(monkeypatch):
     params = [p["text"] for p in enviado["json"]["template"]["components"][0]["parameters"]]
     assert params == ["Maria", "Apto 302", "4821"]
     assert enviado["headers"]["Authorization"] == "Bearer tok"
+
+
+JPEG_MINIMO = b"\xff\xd8\xff\xe0" + b"\x00" * 100
+PNG_MINIMO = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
+
+
+def test_foto_da_encomenda(cliente, tmp_path):
+    m = criar_morador(cliente)
+    enc = cliente.post("/api/encomendas", json={"morador_id": m["id"]}).json()
+    url = f"/api/encomendas/{enc['id']}/foto"
+
+    assert cliente.get(url).status_code == 404
+    assert cliente.get("/api/encomendas").json()[0]["tem_foto"] is False
+
+    r = cliente.put(url, files={"foto": ("f.jpg", JPEG_MINIMO, "image/jpeg")})
+    assert r.status_code == 200
+    primeira = r.json()["foto"]
+    assert primeira.endswith(".jpg")
+    pend = cliente.get("/api/encomendas").json()[0]
+    assert pend["tem_foto"] is True and pend["foto"] == primeira
+
+    baixada = cliente.get(url)
+    assert baixada.status_code == 200 and baixada.content == JPEG_MINIMO
+    assert baixada.headers["content-type"] == "image/jpeg"
+
+    # Trocar a foto apaga o arquivo antigo
+    segunda = cliente.put(url, files={"foto": ("f.png", PNG_MINIMO, "image/png")}).json()["foto"]
+    assert segunda.endswith(".png") and segunda != primeira
+    assert sorted(p.name for p in (tmp_path / "fotos").iterdir()) == [segunda]
+
+
+def test_foto_exige_login(cliente):
+    m = criar_morador(cliente)
+    enc = cliente.post("/api/encomendas", json={"morador_id": m["id"]}).json()
+    cliente.put(f"/api/encomendas/{enc['id']}/foto", files={"foto": ("f.jpg", JPEG_MINIMO, "image/jpeg")})
+    assert cliente.get(f"/api/encomendas/{enc['id']}/foto", headers=basic("x", "y")).status_code == 401
+
+
+def test_foto_recusa_arquivo_invalido_ou_grande(cliente, monkeypatch):
+    m = criar_morador(cliente)
+    enc = cliente.post("/api/encomendas", json={"morador_id": m["id"]}).json()
+    url = f"/api/encomendas/{enc['id']}/foto"
+    # Nome e tipo dizem imagem, mas o conteúdo não é
+    assert cliente.put(url, files={"foto": ("x.jpg", b"<html>oi</html>", "image/jpeg")}).status_code == 400
+    monkeypatch.setattr(config, "FOTO_MAX_BYTES", 50)
+    assert cliente.put(url, files={"foto": ("f.jpg", JPEG_MINIMO, "image/jpeg")}).status_code == 413
+    assert cliente.put("/api/encomendas/999/foto", files={"foto": ("f.jpg", b"\xff\xd8\xff", "image/jpeg")}).status_code == 404
+
+
+def test_banco_antigo_ganha_coluna_foto(tmp_path, monkeypatch):
+    import sqlite3
+    from app import db
+
+    caminho = tmp_path / "antigo.db"
+    antigo = sqlite3.connect(caminho)
+    antigo.execute("""CREATE TABLE encomendas (id INTEGER PRIMARY KEY, morador_id INTEGER NOT NULL,
+        codigo TEXT NOT NULL DEFAULT '', observacao TEXT NOT NULL DEFAULT '', codigo_retirada TEXT NOT NULL,
+        recebida_em TEXT, retirada_em TEXT, retirada_por TEXT, notificado INTEGER NOT NULL DEFAULT 0,
+        erro_notificacao TEXT)""")
+    antigo.commit()
+    antigo.close()
+    monkeypatch.setattr(config, "DATABASE_PATH", str(caminho))
+    db.iniciar_banco()
+    db.iniciar_banco()  # rodar de novo não pode dar erro
+    with db.transacao() as conn:
+        assert "foto" in {c["name"] for c in conn.execute("PRAGMA table_info(encomendas)")}

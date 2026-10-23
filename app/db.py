@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS encomendas (
     retirada_em        TEXT,
     retirada_por       TEXT,
     notificado         INTEGER NOT NULL DEFAULT 0,
-    erro_notificacao   TEXT
+    erro_notificacao   TEXT,
+    foto               TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_encomendas_pendentes ON encomendas (retirada_em);
 """
@@ -50,6 +51,10 @@ def conectar() -> sqlite3.Connection:
 def iniciar_banco() -> None:
     with conectar() as conn:
         conn.executescript(SCHEMA)
+        # Bancos criados antes da foto existir: acrescenta a coluna.
+        colunas = {c["name"] for c in conn.execute("PRAGMA table_info(encomendas)")}
+        if "foto" not in colunas:
+            conn.execute("ALTER TABLE encomendas ADD COLUMN foto TEXT")
 
 
 @contextmanager
