@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portaria - Moradores</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+</head>
+<body>
+<header>
+  <h1>👥 Moradores</h1>
+  <a href="/">← Portaria</a>
+</header>
+
+<main>
+  <section>
+    <h2 id="titulo-form">Cadastrar morador</h2>
+    <form id="form-morador">
+      <label for="nome">Nome</label>
+      <input id="nome" required>
+      <label for="telefone">WhatsApp (com DDD)</label>
+      <input id="telefone" required inputmode="tel" placeholder="(11) 98765-4321">
+      <div class="linha">
+        <div style="flex:1">
+          <label for="bloco">Bloco (opcional)</label>
+          <input id="bloco" placeholder="A">
+        </div>
+        <div style="flex:1">
+          <label for="apto">Apto</label>
+          <input id="apto" required placeholder="302">
+        </div>
+      </div>
+      <div class="linha" style="margin-top:16px">
+        <button type="submit" class="primario" id="btn-salvar">Salvar</button>
+        <button type="button" id="btn-cancelar" class="oculto">Cancelar edição</button>
+      </div>
+      <div id="aviso-form"></div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Importar planilha (CSV)</h2>
+    <p class="detalhe">Colunas: <code>nome, telefone, bloco, apto</code> (separadas por vírgula ou ponto e vírgula). No Excel: Salvar como → CSV.</p>
+    <input type="file" id="arquivo" accept=".csv,text/csv">
+    <button id="btn-importar" style="margin-top:8px">Importar</button>
+    <div id="aviso-importar"></div>
+  </section>
+
+  <section>
+    <h2>Lista <span id="contagem" class="detalhe"></span></h2>
+    <input id="busca" placeholder="Buscar por nome ou apto">
+    <ul id="lista" class="lista"></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let editando = null;
+
+async function api(caminho, opcoes = {}) {
+  const resp = await fetch(caminho, opcoes);
+  if (resp.status === 204) return null;
+  const dados = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const detalhe = Array.isArray(dados.detail) ? dados.detail.map(d => d.msg).join("; ") : dados.detail;
+    throw new Error(detalhe || `Erro ${resp.status}`);
+  }
+  return dados;
+}
+const json = (metodo, corpo) => ({ method: metodo, headers: { "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+
+function aviso(el, texto, tipo = "ok") {
+  el.innerHTML = texto ? `<div class="aviso ${tipo}"></div>` : "";
+  if (texto) el.firstChild.textContent = texto;
+}
+function escapar(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+
+$("form-morador").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const dados = { nome: $("nome").value, telefone: $("telefone").value, bloco: $("bloco").value, apto: $("apto").value };
+  try {
+    if (editando) await api(`/api/moradores/${editando}`, json("PUT", dados));
+    else await api("/api/moradores", json("POST", dados));
+    aviso($("aviso-form"), editando ? "Morador atualizado." : "Morador cadastrado.");
+    cancelarEdicao();
+    carregar();
+  } catch (e) { aviso($("aviso-form"), e.message, "erro"); }
+};
+
+function editar(m) {
+  editando = m.id;
+  $("nome").value = m.nome; $("telefone").value = m.telefone; $("bloco").value = m.bloco; $("apto").value = m.apto;
+  $("titulo-form").textContent = "Editar morador";
+  $("btn-cancelar").classList.remove("oculto");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function cancelarEdicao() {
+  editando = null;
+  $("form-morador").reset();
+  $("titulo-form").textContent = "Cadastrar morador";
+  $("btn-cancelar").classList.add("oculto");
+}
+$("btn-cancelar").onclick = cancelarEdicao;
+
+async function remover(m) {
+  if (!confirm(`Remover ${m.nome} (${m.unidade})?`)) return;
+  await api(`/api/moradores/${m.id}`, { method: "DELETE" });
+  carregar();
+}
+
+async function preCadastrar(m) {
+  const codigo = prompt(`Código de rastreio da compra de ${m.nome}:`);
+  if (!codigo) return;
+  try {
+    await api("/api/rastreios", json("POST", { codigo, morador_id: m.id }));
+    alert("Rastreio cadastrado. Quando a encomenda chegar e o QR for lido, o morador será encontrado automaticamente.");
+  } catch (e) { alert(e.message); }
+}
+
+$("btn-importar").onclick = async () => {
+  const arquivo = $("arquivo").files[0];
+  if (!arquivo) { aviso($("aviso-importar"), "Escolha um arquivo.", "alerta"); return; }
+  const form = new FormData();
+  form.append("arquivo", arquivo);
+  try {
+    const r = await api("/api/moradores/importar", { method: "POST", body: form });
+    const msg = `${r.importados} morador(es) importado(s).` + (r.erros.length ? ` Erros: ${r.erros.join(" | ")}` : "");
+    aviso($("aviso-importar"), msg, r.erros.length ? "alerta" : "ok");
+    carregar();
+  } catch (e) { aviso($("aviso-importar"), e.message, "erro"); }
+};
+
+async function carregar() {
+  const lista = await api(`/api/moradores?q=${encodeURIComponent($("busca").value.trim())}`);
+  $("contagem").textContent = `(${lista.length})`;
+  const ul = $("lista");
+  ul.innerHTML = lista.length ? "" : `<li class="detalhe">Nenhum morador.</li>`;
+  for (const m of lista) {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <div><strong>${escapar(m.unidade)}</strong> · ${escapar(m.nome)}<br><span class="detalhe">${escapar(m.telefone)}</span></div>
+      <div class="acoes">
+        <button data-a="rastreio" title="Pré-cadastrar rastreio">📦</button>
+        <button data-a="editar" title="Editar">✏️</button>
+        <button data-a="remover" title="Remover">🗑️</button>
+      </div>`;
+    li.querySelector('[data-a="rastreio"]').onclick = () => preCadastrar(m);
+    li.querySelector('[data-a="editar"]').onclick = () => editar(m);
+    li.querySelector('[data-a="remover"]').onclick = () => remover(m);
+    ul.appendChild(li);
+  }
+}
+let atraso;
+$("busca").addEventListener("input", () => { clearTimeout(atraso); atraso = setTimeout(carregar, 250); });
+carregar();
+</script>
+</body>
+</html>

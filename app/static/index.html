@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Portaria - Encomendas</title>
+  <link rel="stylesheet" href="/static/estilo.css">
+  <script src="/static/vendor/html5-qrcode.min.js"></script><!-- html5-qrcode 2.3.8 -->
+</head>
+<body>
+<header>
+  <h1 id="titulo">📦 Encomendas</h1>
+  <a href="/moradores">Moradores</a>
+</header>
+
+<main>
+  <section>
+    <h2>Nova encomenda</h2>
+    <button id="btn-ler" class="primario grande">📷 Ler QR code / código de barras</button>
+    <div id="leitor" class="oculto"></div>
+    <button id="btn-parar" class="grande oculto" style="margin-top:8px">Fechar câmera</button>
+
+    <label for="codigo">Código lido (ou digite)</label>
+    <div class="linha">
+      <input id="codigo" placeholder="Código de rastreio" autocomplete="off">
+      <button id="btn-buscar-codigo">Buscar</button>
+    </div>
+    <div id="aviso-codigo"></div>
+
+    <label for="busca-morador">Para quem? (apto ou nome)</label>
+    <input id="busca-morador" placeholder="Ex.: 302, A302, Maria" autocomplete="off">
+    <ul id="resultado-moradores" class="lista"></ul>
+
+    <label for="observacao">Observação (opcional)</label>
+    <input id="observacao" placeholder="Ex.: caixa grande, Mercado Livre">
+
+    <button id="btn-registrar" class="primario grande" style="margin-top:16px" disabled>
+      Registrar e avisar morador
+    </button>
+    <div id="aviso-registro"></div>
+  </section>
+
+  <section>
+    <h2>Aguardando retirada <span id="contagem" class="detalhe"></span></h2>
+    <input id="busca-pendentes" placeholder="Filtrar por apto, nome ou código">
+    <ul id="pendentes" class="lista"></ul>
+  </section>
+</main>
+
+<dialog id="dlg-retirada">
+  <form method="dialog" id="form-retirada">
+    <h2>Entregar encomenda</h2>
+    <p id="dlg-descricao" class="detalhe"></p>
+    <label for="cod-retirada">Código de retirada informado pelo morador</label>
+    <input id="cod-retirada" class="codigo-grande" inputmode="numeric" maxlength="4" autocomplete="off">
+    <label for="retirada-por">Quem retirou (opcional)</label>
+    <input id="retirada-por" placeholder="Nome">
+    <label style="display:flex;gap:8px;align-items:center;color:var(--texto)">
+      <input type="checkbox" id="sem-codigo" style="width:auto"> Morador não tem o código (exige nome)
+    </label>
+    <div id="dlg-erro"></div>
+    <div class="linha" style="margin-top:16px;justify-content:flex-end">
+      <button value="cancelar" formnovalidate>Cancelar</button>
+      <button id="btn-confirmar-retirada" class="primario" value="ok">Confirmar entrega</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let moradorSelecionado = null;
+let leitor = null;
+let encomendaRetirada = null;
+
+async function api(caminho, opcoes = {}) {
+  const resp = await fetch(caminho, {
+    headers: { "Content-Type": "application/json" },
+    ...opcoes,
+  });
+  if (resp.status === 204) return null;
+  const dados = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const detalhe = Array.isArray(dados.detail) ? dados.detail.map(d => d.msg).join("; ") : dados.detail;
+    throw new Error(detalhe || `Erro ${resp.status}`);
+  }
+  return dados;
+}
+
+function aviso(el, texto, tipo = "ok") {
+  el.innerHTML = texto ? `<div class="aviso ${tipo}"></div>` : "";
+  if (texto) el.firstChild.textContent = texto;
+}
+
+function escapar(s) {
+  const d = document.createElement("div");
+  d.textContent = s ?? "";
+  return d.innerHTML;
+}
+
+// ---------- Leitura do código ----------
+
+$("btn-ler").onclick = async () => {
+  $("leitor").classList.remove("oculto");
+  $("btn-parar").classList.remove("oculto");
+  $("btn-ler").classList.add("oculto");
+  leitor = new Html5Qrcode("leitor", {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.QR_CODE,
+      Html5QrcodeSupportedFormats.DATA_MATRIX,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.EAN_13,
+    ],
+    verbose: false,
+  });
+  try {
+    await leitor.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 260, height: 260 } },
+      async (texto) => { await pararLeitor(); codigoLido(texto); },
+    );
+  } catch (e) {
+    await pararLeitor();
+    aviso($("aviso-codigo"), "Não foi possível abrir a câmera. No celular, o site precisa estar em HTTPS. " + e, "erro");
+  }
+};
+
+async function pararLeitor() {
+  if (leitor) {
+    try { await leitor.stop(); } catch (_) {}
+    try { leitor.clear(); } catch (_) {}
+    leitor = null;
+  }
+  $("leitor").classList.add("oculto");
+  $("btn-parar").classList.add("oculto");
+  $("btn-ler").classList.remove("oculto");
+}
+$("btn-parar").onclick = pararLeitor;
+
+async function codigoLido(texto) {
+  $("codigo").value = texto.trim();
+  if (navigator.vibrate) navigator.vibrate(100);
+  await buscarCodigo();
+}
+
+async function buscarCodigo() {
+  const codigo = $("codigo").value.trim();
+  aviso($("aviso-codigo"), "");
+  if (!codigo) return;
+  try {
+    const r = await api(`/api/buscar-codigo?codigo=${encodeURIComponent(codigo)}`);
+    if (r.ja_registrada) {
+      aviso($("aviso-codigo"), "Atenção: este código já está registrado e aguardando retirada.", "alerta");
+    }
+    if (r.morador) {
+      selecionarMorador(r.morador);
+      $("resultado-moradores").innerHTML = "";
+      renderMoradores([r.morador]);
+      if (!r.ja_registrada) aviso($("aviso-codigo"), `Rastreio pré-cadastrado por ${r.morador.nome} (${r.morador.unidade}).`);
+    } else {
+      $("busca-morador").focus();
+    }
+  } catch (e) {
+    aviso($("aviso-codigo"), e.message, "erro");
+  }
+}
+$("btn-buscar-codigo").onclick = buscarCodigo;
+$("codigo").addEventListener("keydown", (e) => { if (e.key === "Enter") buscarCodigo(); });
+
+// ---------- Escolha do morador ----------
+
+let atrasoBusca;
+$("busca-morador").addEventListener("input", () => {
+  clearTimeout(atrasoBusca);
+  atrasoBusca = setTimeout(async () => {
+    const q = $("busca-morador").value.trim();
+    if (!q) { renderMoradores([]); return; }
+    renderMoradores(await api(`/api/moradores?q=${encodeURIComponent(q)}`));
+  }, 250);
+});
+
+function renderMoradores(lista) {
+  const ul = $("resultado-moradores");
+  ul.innerHTML = "";
+  for (const m of lista) {
+    const li = document.createElement("li");
+    li.className = "clicavel" + (moradorSelecionado?.id === m.id ? " selecionado" : "");
+    li.innerHTML = `<div><strong>${escapar(m.unidade)}</strong><br><span class="detalhe">${escapar(m.nome)}</span></div>`;
+    li.onclick = () => { selecionarMorador(m); renderMoradores(lista); };
+    ul.appendChild(li);
+  }
+  if (lista.length === 0 && $("busca-morador").value.trim()) {
+    ul.innerHTML = `<li class="detalhe">Nenhum morador encontrado. Cadastre em "Moradores".</li>`;
+  }
+}
+
+function selecionarMorador(m) {
+  moradorSelecionado = m;
+  $("btn-registrar").disabled = false;
+  $("btn-registrar").textContent = `Registrar e avisar ${m.nome.split(" ")[0]} (${m.unidade})`;
+}
+
+// ---------- Registro ----------
+
+$("btn-registrar").onclick = async () => {
+  if (!moradorSelecionado) return;
+  $("btn-registrar").disabled = true;
+  try {
+    const r = await api("/api/encomendas", {
+      method: "POST",
+      body: JSON.stringify({
+        morador_id: moradorSelecionado.id,
+        codigo: $("codigo").value.trim(),
+        observacao: $("observacao").value.trim(),
+      }),
+    });
+    if (r.notificado) {
+      aviso($("aviso-registro"), `✅ Registrada! ${moradorSelecionado.nome} foi avisado(a). Código de retirada: ${r.codigo_retirada}`);
+    } else {
+      aviso($("aviso-registro"), `Encomenda registrada, mas o aviso falhou: ${r.erro_notificacao}`, "alerta");
+    }
+    limparFormulario();
+    carregarPendentes();
+  } catch (e) {
+    aviso($("aviso-registro"), e.message, "erro");
+    $("btn-registrar").disabled = false;
+  }
+};
+
+function limparFormulario() {
+  moradorSelecionado = null;
+  for (const id of ["codigo", "busca-morador", "observacao"]) $(id).value = "";
+  $("resultado-moradores").innerHTML = "";
+  aviso($("aviso-codigo"), "");
+  $("btn-registrar").disabled = true;
+  $("btn-registrar").textContent = "Registrar e avisar morador";
+}
+
+// ---------- Pendentes ----------
+
+async function carregarPendentes() {
+  const q = $("busca-pendentes").value.trim();
+  const lista = await api(`/api/encomendas?status=pendentes&q=${encodeURIComponent(q)}`);
+  $("contagem").textContent = `(${lista.length})`;
+  const ul = $("pendentes");
+  ul.innerHTML = lista.length ? "" : `<li class="detalhe">Nenhuma encomenda aguardando.</li>`;
+  for (const e of lista) {
+    const li = document.createElement("li");
+    const status = e.notificado
+      ? `<span class="etiqueta ok">✓ avisado</span>`
+      : `<span class="etiqueta erro" title="${escapar(e.erro_notificacao)}">⚠ aviso não enviado</span>`;
+    li.innerHTML = `
+      <div>
+        <strong>${escapar(e.unidade)}</strong> · ${escapar(e.nome)}<br>
+        <span class="detalhe">${escapar(e.recebida_em)}${e.codigo ? " · " + escapar(e.codigo) : ""}${e.observacao ? " · " + escapar(e.observacao) : ""}</span><br>
+        ${status}
+      </div>
+      <div class="acoes">
+        <button data-acao="reenviar" title="Reenviar aviso">🔁</button>
+        <button data-acao="entregar" class="primario">Entregar</button>
+      </div>`;
+    li.querySelector('[data-acao="reenviar"]').onclick = () => reenviar(e);
+    li.querySelector('[data-acao="entregar"]').onclick = () => abrirRetirada(e);
+    ul.appendChild(li);
+  }
+}
+
+let atrasoPendentes;
+$("busca-pendentes").addEventListener("input", () => {
+  clearTimeout(atrasoPendentes);
+  atrasoPendentes = setTimeout(carregarPendentes, 250);
+});
+
+async function reenviar(e) {
+  try {
+    const r = await api(`/api/encomendas/${e.id}/reenviar`, { method: "POST" });
+    alert(r.notificado ? "Aviso reenviado." : "Falhou: " + r.erro_notificacao);
+  } catch (err) { alert(err.message); }
+  carregarPendentes();
+}
+
+function abrirRetirada(e) {
+  encomendaRetirada = e;
+  $("dlg-descricao").textContent = `${e.unidade} · ${e.nome}`;
+  $("cod-retirada").value = "";
+  $("retirada-por").value = "";
+  $("sem-codigo").checked = false;
+  aviso($("dlg-erro"), "");
+  $("dlg-retirada").showModal();
+  $("cod-retirada").focus();
+}
+
+$("btn-confirmar-retirada").onclick = async (ev) => {
+  ev.preventDefault();
+  try {
+    await api(`/api/encomendas/${encomendaRetirada.id}/retirar`, {
+      method: "POST",
+      body: JSON.stringify({
+        codigo_retirada: $("cod-retirada").value.trim(),
+        retirada_por: $("retirada-por").value.trim(),
+        sem_codigo: $("sem-codigo").checked,
+      }),
+    });
+    $("dlg-retirada").close();
+    carregarPendentes();
+  } catch (e) {
+    aviso($("dlg-erro"), e.message, "erro");
+  }
+};
+
+api("/api/config").then(c => { $("titulo").textContent = `📦 ${c.nome_condominio}`; });
+carregarPendentes();
+</script>
+</body>
+</html>
